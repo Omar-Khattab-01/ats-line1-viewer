@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 import zipfile
@@ -165,6 +166,35 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(clean_path(f'“{self.source}”'), self.source.resolve())
         self.assertEqual(excel_safe("=1+2"), "'=1+2")
 
+    def test_consists_show_in_queries_search_and_exports(self):
+        self.write(data=fixture("6").replace(b"<x:thalesVehicleId>39", b"<x:thalesVehicleId>40").replace(b"<x:thalesVehicleId>27", b"<x:thalesVehicleId>6"))
+        dataset = self.load()
+        overview = self.store.overview(dataset)
+        self.assertEqual(overview["trains"][0]["consist"], "06-40")
+        self.assertEqual(self.store.query(dataset, filters={"q": "06-40"})["total"], 1)
+        self.assertEqual(next(self.store.export_rows(dataset))[0]["consist"], "06-40")
+
+    def test_recoupled_groups_do_not_get_a_single_invented_pair(self):
+        self.write(data=fixture("6"))
+        self.write("tp_20261020000100.xml", fixture("6").replace(b"<x:thalesVehicleId>39", b"<x:thalesVehicleId>40"))
+        dataset = self.load()
+        self.assertIsNone(self.store.identities(dataset)["6"]["label"])
+        self.assertEqual(self.store.query(dataset)["rows"][0]["consist"], "")
+        self.assertTrue(self.store.query(dataset, "events")["rows"][0]["consist"])
+
+    def test_map_event_anchor_cannot_use_later_received_events(self):
+        # The second capture contains an old event with a useful departure time.
+        # That event must not influence playback of the first capture.
+        first = fixture("6", "2026-10-20T04:01:00").replace(b"TUN-W", b"BAY-E").replace(b"<x:next>BAY-E", b"<x:next>PIM-E")
+        first = first[:first.index(b"<eventAll>")]+b"</PredictionEventAll>"
+        self.write(data=first)
+        later = fixture("6").replace(b"2026-10-20T04:00:05.250", b"2026-10-20T03:59:30").replace(b"TUN-W", b"TUN-E")
+        later = later.replace(b"<x:eventinfo><x:id>6</x:id>", b"<x:eventinfo><x:id>6</x:id><x:dep>2026-10-20T03:59:00</x:dep>")
+        self.write("tp_20261020000200.xml", later)
+        dataset = self.load()
+        sid = self.store.overview(dataset)["snapshots"][0]["id"]
+        self.assertEqual(self.store.snapshot(dataset, sid)["positions"]["trains"][0]["method"], "approach_segment")
+
 
 class HTTPTests(unittest.TestCase):
     @classmethod
@@ -202,6 +232,18 @@ class HTTPTests(unittest.TestCase):
         detail = json.load(self.request(f"/api/snapshot?dataset={self.dataset}&id={sid}&clock=240"))
         self.assertEqual(len(detail["predictions"]), 1101)
         self.assertEqual(self.request(f"/api/raw?dataset={self.dataset}&id={sid}").read(), fixture(count=1101))
+
+    def test_windows_default_encoding_does_not_corrupt_page(self):
+        def windows_read_text(path, encoding=None, errors=None):
+            return path.read_bytes().decode(encoding or "cp1252", errors or "strict")
+        with mock.patch.object(Path, "read_text", windows_read_text):
+            response = self.request("/")
+            page = response.read().decode("utf-8")
+        self.assertIn("Line 1 · ATS explorer", page)
+        self.assertNotIn("â€", page)
+        for path in ("/app.js", "/app.css"):
+            response = self.request(path)
+            self.assertIn("charset=utf-8", response.headers["Content-Type"])
 
     def test_session_token_host_and_origin_guards(self):
         for path, authorized, body, headers in [

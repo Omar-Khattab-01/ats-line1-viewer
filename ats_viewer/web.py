@@ -95,9 +95,10 @@ def handler_for(app):
                         return self.send({"error": "Reload the local viewer to reconnect"}, status=403)
                     return self.api_get(path, query)
                 if path == "/":
-                    return self.send((ASSETS / "index.html").read_text().replace("__TOKEN__", app.token), "text/html; charset=utf-8")
+                    return self.send((ASSETS / "index.html").read_text(encoding="utf-8").replace("__TOKEN__", app.token), "text/html; charset=utf-8")
                 if path in ("/app.js", "/app.css", "/favicon.svg"):
-                    return self.send((ASSETS / path[1:]).read_bytes(), mimetypes.guess_type(path)[0] or "application/octet-stream")
+                    mime = {"/app.js": "text/javascript", "/app.css": "text/css", "/favicon.svg": "image/svg+xml"}[path]
+                    return self.send((ASSETS / path[1:]).read_bytes(), mime + "; charset=utf-8")
                 self.send({"error": "Not found"}, status=404)
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -132,8 +133,8 @@ def handler_for(app):
                 # Validate and start the first page before sending HTTP headers.
                 batches = app.store.export_rows(dataset, kind, filters)
                 first = next(batches, [])
-                fields = (["capture", "platform", "train_id", "arr", "dep", "destination", "next_platform", "direction", "stop", "service", "speed", "cars", "source", "raw"]
-                          if kind == "predictions" else ["capture", "time", "code", "platform", "train_id", "vehicles", "source", "raw"])
+                fields = (["capture", "platform", "consist", "train_id", "identity_status", "arr", "dep", "destination", "next_platform", "direction", "stop", "service", "speed", "cars", "source", "raw"]
+                          if kind == "predictions" else ["capture", "time", "code", "event_label", "event_label_status", "platform", "consist", "train_id", "vehicles", "source", "raw"])
                 self.send_response(200)
                 self.send_header("Content-Type", "text/csv; charset=utf-8")
                 self.send_header("Content-Disposition", f'attachment; filename="ats-{kind}.csv"')

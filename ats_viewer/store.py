@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .parser import STATIONS, capture_time, parse, timestamp
+from .operations import EVENT_CODES, consist_label, estimate_positions, seconds
 
 MAX_XML_BYTES = 32 * 1024 * 1024
 SCHEMA = """
@@ -79,6 +80,31 @@ class Store:
     def datasets(self):
         with self.connect() as db:
             return rows(db, "SELECT * FROM datasets ORDER BY updated DESC")
+
+    def identities(self, dataset):
+        """Collection-wide consist lookup; ambiguous re-couplings stay ambiguous."""
+        with self.connect() as db:
+            events = rows(db, "SELECT e.train_id,e.vehicles FROM events e JOIN snapshots s ON s.id=e.snapshot WHERE s.dataset=? AND s.duplicate_of IS NULL ORDER BY e.row_id", (dataset,))
+        pairs = {}
+        for event in events:
+            label = consist_label(json.loads(event["vehicles"]), event["train_id"])
+            if label:
+                pairs.setdefault(event["train_id"], set()).add(label)
+        return {tid: {"variants": sorted(labels), "label": next(iter(labels)) if len(labels) == 1 else None,
+                      "status": "event vehicle IDs" if len(labels) == 1 else "multiple consists in collection"}
+                for tid, labels in pairs.items()}
+
+    @staticmethod
+    def label_row(row, identities):
+        identity = identities.get(row.get("train_id"), {})
+        own = consist_label(row.get("vehicles", []), row.get("train_id"))
+        row["consist"] = own or identity.get("label") or ""
+        row["identity_status"] = "this event" if own else identity.get("status", "vehicle pair unavailable")
+        if "code" in row:
+            definition = EVENT_CODES.get(row["code"], {})
+            row["event_label"] = definition.get("label", "Unknown code")
+            row["event_label_status"] = definition.get("status", "unknown")
+        return row
 
     def ingest(self, value, progress=None):
         root = clean_path(value)
@@ -201,7 +227,11 @@ class Store:
         median = statistics.median(intervals) if intervals else None
         threshold = max(60, (median or 20) * 3)
         gaps = [{"from": a.isoformat(), "to": b.isoformat(), "seconds": (b - a).total_seconds()} for a, b in zip(times, times[1:]) if (b-a).total_seconds() > threshold]
-        return {"collection": dict(collection), "stats": {**dict(stats), "files": len(snaps), "valid": len(valid),
+        identities = self.identities(dataset)
+        for train in trains:
+            self.label_row(train, identities)
+        return {"collection": dict(collection), "identities": identities, "event_definitions": EVENT_CODES,
+                "stats": {**dict(stats), "files": len(snaps), "valid": len(valid),
                 "invalid": sum(s["status"] != "valid" for s in snaps), "duplicates": sum(s["duplicate_of"] is not None for s in snaps),
                 "events": events, "platforms": len(platforms), "median_interval": median, "gap_threshold": threshold,
                 "first": times[0].isoformat() if times else None, "last": times[-1].isoformat() if times else None},
@@ -218,17 +248,33 @@ class Store:
             result["platforms"] = rows(db, "SELECT * FROM platforms WHERE snapshot=? ORDER BY rowid", (sid,))
             result["predictions"] = rows(db, "SELECT * FROM predictions WHERE snapshot=? ORDER BY platform,arr,train_id", (sid,))
             result["events"] = rows(db, "SELECT * FROM events WHERE snapshot=? ORDER BY time,row_id", (sid,))
+            received = rows(db, "SELECT e.*,s.capture AS received_capture,s.name AS source FROM events e JOIN snapshots s ON s.id=e.snapshot WHERE s.dataset=? AND s.duplicate_of IS NULL AND s.capture<=? ORDER BY s.capture,e.row_id", (dataset, result["capture"])) if result["capture"] else []
         capture = timestamp(result["capture"])
         reference = capture + timedelta(minutes=offset) if capture else None
         result["feed_reference"] = reference.isoformat() if reference else None
+        identities = self.identities(dataset)
         for p in result["predictions"]:
             arrival, departure = timestamp(p["arr"]), timestamp(p["dep"])
             p["eta_seconds"] = self.seconds(arrival, reference)
             p["dwell_seconds"] = self.seconds(departure, arrival)
             p["raw"] = json.loads(p["raw"])
+            self.label_row(p, identities)
         for e in result["events"]:
             e["vehicles"] = json.loads(e["vehicles"])
             e["raw"] = json.loads(e["raw"])
+            self.label_row(e, identities)
+        recent = {}
+        for event in received:
+            age = seconds(reference, timestamp(event["time"]))
+            if age is None or age < 0:
+                continue
+            previous = recent.get(event["train_id"])
+            if previous is None or timestamp(event["time"]) >= timestamp(previous["time"]):
+                event = self.decode_row(event)
+                recent[event["train_id"]] = self.label_row(event, identities)
+        result["positions"] = estimate_positions(result["predictions"], recent, result["feed_reference"])
+        for item in result["positions"]["trains"] + result["positions"]["unplaced"]:
+            self.label_row(item, identities)
         return result
 
     @staticmethod
@@ -257,9 +303,12 @@ class Store:
                 where.append(f"s.capture {operator} ?")
                 args.append(value.isoformat())
         if filters.get("q"):
-            where.append("(p.raw LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\' OR p.platform LIKE ? ESCAPE '\\')")
+            matching = [tid for tid, info in self.identities(dataset).items() if info.get("label") and filters["q"].lower() in info["label"].lower()]
+            identity_clause = f" OR p.train_id IN ({','.join('?' for _ in matching)})" if matching else ""
+            where.append("(p.raw LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\' OR p.platform LIKE ? ESCAPE '\\'" + identity_clause + ")")
             escaped = filters["q"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             args.extend([f"%{escaped}%"] * 3)
+            args.extend(matching)
         if filters.get("flag") and kind == "predictions":
             flag = filters["flag"]
             if flag == "nonstop": where.append("p.stop='false'")
@@ -285,15 +334,17 @@ class Store:
         with self.connect() as db:
             count = db.execute(f"SELECT count(*) {join}", args).fetchone()[0]
             result = rows(db, f"SELECT p.*,s.name AS source,s.capture {join} ORDER BY s.capture,p.row_id LIMIT ? OFFSET ?", [*args, limit, offset])
-        return {"rows": [self.decode_row(row) for row in result], "total": count, "limit": limit, "offset": offset}
+        identities = self.identities(dataset)
+        return {"rows": [self.label_row(self.decode_row(row), identities) for row in result], "total": count, "limit": limit, "offset": offset}
 
     def export_rows(self, dataset, kind="predictions", filters=None):
         join, args = self.query_sql(dataset, kind, filters)
+        identities = self.identities(dataset)
         with self.connect() as db:
             # One read transaction keeps the complete CSV consistent during rescans.
             cursor = db.execute(f"SELECT p.*,s.name AS source,s.capture {join} ORDER BY s.capture,p.row_id", args)
             while batch := cursor.fetchmany(1000):
-                yield [self.decode_row(row) for row in batch]
+                yield [self.label_row(self.decode_row(row), identities) for row in batch]
 
     def raw(self, dataset, sid):
         with self.connect() as db:
