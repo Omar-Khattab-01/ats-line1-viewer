@@ -200,10 +200,14 @@ tbody tr[data-detail]:hover,tbody tr[data-snapshot]:hover{background:#fff4f4}
 .health-card strong{font-size:24px;display:block;margin-bottom:9px}
 .health-card span{font-size:11px;color:var(--muted)}
 #view-health>section.panel{padding:22px;margin-bottom:22px}
+#view-health{--coverage-readable:#2f855a;--coverage-invalid:#c43237;--coverage-duplicate:#b8b8b8}
 .coverage{display:flex;flex-wrap:wrap;gap:4px}
-.coverage button{width:12px;height:22px;border-radius:2px;background:#d8868a;padding:0}
-.coverage button.invalid,.coverage button.empty{background:#c4786d;min-height:0}
-.coverage button.duplicate{background:#d8d3d4}
+.coverage button{width:12px;height:22px;border-radius:2px;background:var(--coverage-readable);padding:0}
+.coverage button.invalid,.coverage button.empty{background:var(--coverage-invalid);min-height:0}
+.coverage button.duplicate{background:var(--coverage-duplicate)}
+.coverage-legend .legend-dot.readable{background:var(--coverage-readable)}
+.coverage-legend .legend-dot.invalid{background:var(--coverage-invalid)}
+.coverage-legend .legend-dot.duplicate{background:var(--coverage-duplicate)}
 .coverage button:hover,.coverage button.current{outline:2px solid var(--ink);outline-offset:1px}
 .gap-note{font-size:11px;margin:15px 0 0}
 .notice{display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:6px;border:1px solid #f0d1d1;background:#fff2f2;margin:16px 0;color:#9f3036;font-size:12px;line-height:1.5}
