@@ -15,10 +15,12 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(consist_label(["063", "58", "63"], "58"), "58-63")
         self.assertEqual(consist_label([], "6"), "")
 
-    def test_operator_supplied_event_dictionary(self):
+    def test_confirmed_event_dictionary(self):
         self.assertEqual({k: v["label"] for k, v in EVENT_CODES.items()}, {
-            "100": "Arriving", "101": "Arrived", "102": "Departing", "103": "Departed"})
-        self.assertTrue(all(v["status"] == "operator supplied" for v in EVENT_CODES.values()))
+            "100": "Arrived", "101": "Arriving", "102": "Departing", "103": "Departed"})
+        self.assertEqual(EVENT_CODES["100"]["description"], "Train Arrival")
+        self.assertEqual(EVENT_CODES["101"]["description"], "Train Approach")
+        self.assertTrue(all(v["status"] == "confirmed" for v in EVENT_CODES.values()))
 
     def test_dwell_and_confirmed_track_mapping(self):
         data = estimate_positions([prediction("LEE-W", "2026-10-20T03:59:30", "2026-10-20T04:00:30")], {}, "2026-10-20T04:00:00")

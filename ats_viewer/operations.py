@@ -2,17 +2,17 @@
 
 Track numbers are the operator-confirmed platform mapping W=1 and E=2.
 Positions use only the selected snapshot and events already received by then.
-Event-code definitions were explicitly supplied by the operator.
+Event-code definitions match the confirmed reference supplied by the user.
 """
 from __future__ import annotations
 
 from .parser import STATIONS, timestamp
 
 EVENT_CODES = {
-    "100": {"label": "Arriving", "status": "operator supplied"},
-    "101": {"label": "Arrived", "status": "operator supplied"},
-    "102": {"label": "Departing", "status": "operator supplied"},
-    "103": {"label": "Departed", "status": "operator supplied"},
+    "100": {"label": "Arrived", "description": "Train Arrival", "status": "confirmed"},
+    "101": {"label": "Arriving", "description": "Train Approach", "status": "confirmed"},
+    "102": {"label": "Departing", "description": "Train Departing", "status": "confirmed"},
+    "103": {"label": "Departed", "description": "Train Departed", "status": "confirmed"},
 }
 STATION_CODES = list(STATIONS)
 TRACKS = {"W": 1, "E": 2}

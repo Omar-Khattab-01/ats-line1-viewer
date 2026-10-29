@@ -262,6 +262,17 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(records[-1]["arr"], "2026-10-20T04:01:30.150")
         self.assertEqual(json.loads(records[0]["raw"])["id"], "17")
 
+    def test_confirmed_event_definitions_reach_api_and_csv(self):
+        result = json.load(self.request(f"/api/rows?dataset={self.dataset}&kind=events&code=101"))
+        self.assertEqual(result["rows"][0]["event_label"], "Arriving")
+        self.assertEqual(result["rows"][0]["event_label_status"], "confirmed")
+        data = self.request(f"/api/export?dataset={self.dataset}&kind=events&code=101").read().decode("utf-8-sig")
+        event = next(csv.DictReader(io.StringIO(data)))
+        self.assertEqual(event["code"], "101")
+        self.assertEqual(event["event_label"], "Arriving")
+        self.assertEqual(event["event_label_status"], "confirmed")
+        self.assertEqual(json.loads(event["raw"])["code"], "101")
+
     def test_background_import_reports_failure_and_recovers(self):
         self.request("/api/load", body={"path": str(self.root / "missing")}).close()
         for _ in range(100):
