@@ -1,6 +1,6 @@
 """Read Thales PredictionEventAll exports without changing source data.
 
-Clock values are intentionally stored as offset-free strings. An operator supplied
+Clock values are intentionally stored as offset-free strings. A configured
 clock difference is applied only when comparing predictions to filename captures.
 Event IDs, direction codes, vehicle IDs, speed and cars keep their source meaning.
 """

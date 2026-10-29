@@ -1,8 +1,8 @@
 """Display identities and conservative, explicitly estimated track positions.
 
-Track numbers are the operator-confirmed platform mapping W=1 and E=2.
+Track 1 is West (W platforms); Track 2 is East (E platforms).
 Positions use only the selected snapshot and events already received by then.
-Event-code definitions match the confirmed reference supplied by the user.
+Event codes identify arrival, approach, departure preparation, and departure.
 """
 from __future__ import annotations
 
