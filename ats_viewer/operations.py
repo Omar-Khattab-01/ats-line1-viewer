@@ -72,7 +72,7 @@ def estimate_positions(predictions, recent_events, reference):
         base = {"train_id": train_id, "estimated": True}
         mapped = [p for p in items if platform_location(p["platform"])]
         if now is None or not mapped:
-            unplaced.append({**base, "reason": "Capture clock unavailable" if now is None else "No core Line 1 platform prediction"})
+            unplaced.append({**base, "reason": "Capture clock unavailable" if now is None else "No prediction at a mapped Line 1 platform"})
             continue
         usable = []
         for p in mapped:

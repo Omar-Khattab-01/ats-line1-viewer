@@ -200,10 +200,11 @@ function renderOverview() {
 function renderTrackMap(target,details) {
   if(!state.snapshot)return;
   const snap=state.snapshot,data=snap.positions||{trains:[],unplaced:[]},stations=Object.entries(state.overview.station_names);
-  const x=i=>145+i*94, width=1395, height=435, tracks=[{number:1,suffix:"W",direction:"West",y:150},{number:2,suffix:"E",direction:"East",y:320}];
+  const x=i=>145+i*94, end=x(stations.length-1), width=end+122, height=435;
+  const tracks=[{number:1,suffix:"W",direction:"West",y:150},{number:2,suffix:"E",direction:"East",y:320}];
   let drawing="";
   for(const track of tracks) {
-    drawing+=`<text class="track-name" x="16" y="${track.y-5}">Track ${track.number}</text><text class="track-subtitle" x="16" y="${track.y+15}">${track.direction}</text><line class="track-rail" x1="${x(0)}" x2="${x(12)}" y1="${track.y-4}" y2="${track.y-4}"/><line class="track-rail" x1="${x(0)}" x2="${x(12)}" y1="${track.y+4}" y2="${track.y+4}"/>`;
+    drawing+=`<text class="track-name" x="16" y="${track.y-5}">Track ${track.number}</text><text class="track-subtitle" x="16" y="${track.y+15}">${track.direction}</text><line class="track-rail" x1="${x(0)}" x2="${end}" y1="${track.y-4}" y2="${track.y-4}"/><line class="track-rail" x1="${x(0)}" x2="${end}" y1="${track.y+4}" y2="${track.y+4}"/>`;
     stations.forEach(([code,name],i)=>{
       const p=snap.platforms.find(p=>p.platform===`${code}-${track.suffix}`),flag=p&&(p.closed==="true"||p.held==="true");
       const y=track.number===1 ? track.y+35 : track.y+35;
@@ -433,7 +434,7 @@ $("help").onclick=()=>modal("Viewer guide",`
   <h3>Open and update a collection</h3>
   <p>Choose a folder of XML snapshots or a ZIP archive. Use Rescan folder to load changes, or enable Follow new files to refresh every 10 seconds.</p>
   <h3>Playback and track map</h3>
-  <p>Drag the timeline or press Play to move through the snapshots. The map covers Tunney’s Pasture to Blair. Track 1 is West; Track 2 is East. Filled markers show estimated positions; outlined markers show trains approaching within a highlighted segment. Select a train for its prediction details, or a station for its platform board.</p>
+  <p>Drag the timeline or press Play to move through the snapshots. The map covers Tunney’s Pasture to Trim. Track 1 is West; Track 2 is East. Filled markers show estimated positions; outlined markers show trains approaching within a highlighted segment. Select a train for its prediction details, or a station for its platform board.</p>
   <h3>Clock alignment</h3>
   <p>Capture times come from filenames such as <code>tp_YYYYMMDDHHMMSS.xml</code>. Set the XML clock minus the filename clock under Data source. The default is +240 minutes; use 0 if both clocks match. Countdown = predicted arrival − adjusted capture time. For periods spanning a clock change, load each period with its corresponding offset.</p>
   <h3>Train and station views</h3>

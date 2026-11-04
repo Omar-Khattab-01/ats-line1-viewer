@@ -16,6 +16,8 @@ STATIONS = {
     "LYO": "Lyon", "PAR": "Parliament", "RID": "Rideau", "UOT": "uOttawa",
     "LEE": "Lees", "HUR": "Hurdman", "TRE": "Tremblay", "STL": "St-Laurent",
     "CYR": "Cyrville", "BLA": "Blair",
+    "MON": "Montréal", "JEA": "Jeanne d’Arc", "CVG": "Convent Glen",
+    "PDO": "Place d’Orléans", "TRI": "Trim",
 }
 
 

@@ -45,6 +45,15 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(result["segment"], [9, 10])
         self.assertIn("distance unknown", result["status"])
 
+    def test_map_places_trains_across_blair_and_at_trim(self):
+        predictions = [prediction("BLA-E", "2026-11-04T13:58:00", "2026-11-04T13:59:00", "MON-E"),
+                       prediction("MON-E", "2026-11-04T14:01:00", "2026-11-04T14:01:30", "JEA-E"),
+                       prediction("TRI-W", "2026-11-04T13:59:30", "2026-11-04T14:00:30", tid="7")]
+        result = estimate_positions(predictions, {}, "2026-11-04T14:00:00")
+        self.assertEqual(result["unplaced"], [])
+        self.assertEqual([(p["track"], p["position"], p["method"]) for p in result["trains"]],
+                         [(2, 12.5, "time_interpolation"), (1, 17, "predicted_dwell")])
+
     def test_terminal_path_is_not_invented(self):
         result = estimate_positions([prediction("TUN-W", "2026-10-20T04:01:00", None, "BAY-E")], {}, "2026-10-20T04:00:00")["trains"][0]
         self.assertEqual(result["method"], "prediction_proximity")
