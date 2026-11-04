@@ -58,6 +58,17 @@ def rows(connection, sql, args=()):
     return [dict(row) for row in connection.execute(sql, args)]
 
 
+def snapshot_folder(name):
+    """Use the containing path, including the archive name for ZIP members."""
+    return name.replace(" / ", "/").replace("\\", "/").rpartition("/")[0] or "."
+
+
+def count_events(db, source_ids, args):
+    return rows(db, f"""SELECT e.platform, e.code, count(*) AS count
+        FROM events e JOIN ({source_ids}) s ON s.id=e.snapshot
+        GROUP BY e.code, e.platform ORDER BY e.code, e.platform""", args)
+
+
 class Store:
     def __init__(self, path):
         self.path = Path(path)
@@ -215,13 +226,18 @@ class Store:
             snaps = rows(db, "SELECT id,name,capture,status,error,warnings,size,sha,duplicate_of FROM snapshots WHERE dataset=? ORDER BY capture IS NULL,capture,name", (dataset,))
             for s in snaps:
                 s["warnings"] = json.loads(s["warnings"])
+                s["folder"] = snapshot_folder(s["name"])
             valid = [s for s in snaps if s["status"] == "valid" and s["duplicate_of"] is None]
             scope = "s.dataset=? AND s.duplicate_of IS NULL AND s.status='valid'"
             stats = db.execute(f"SELECT count(*) AS predictions,count(DISTINCT train_id) AS trains,count(DISTINCT platform) AS predicted_platforms FROM predictions p JOIN snapshots s ON s.id=p.snapshot WHERE {scope}", (dataset,)).fetchone()
             platforms = rows(db, f"SELECT p.platform,count(*) AS observations,sum(p.closed='true') AS closed,sum(p.held='true') AS held FROM platforms p JOIN snapshots s ON s.id=p.snapshot WHERE {scope} GROUP BY p.platform ORDER BY min(p.rowid)", (dataset,))
             trains = rows(db, f"SELECT p.train_id,count(*) AS predictions,count(DISTINCT p.snapshot) AS snapshots,min(s.capture) AS first_seen,max(s.capture) AS last_seen FROM predictions p JOIN snapshots s ON s.id=p.snapshot WHERE {scope} GROUP BY p.train_id ORDER BY length(p.train_id),p.train_id", (dataset,))
-            events = db.execute(f"SELECT count(*) FROM events e JOIN snapshots s ON s.id=e.snapshot WHERE {scope}", (dataset,)).fetchone()[0]
-            event_codes = rows(db, f"SELECT e.code,count(*) AS count FROM events e JOIN snapshots s ON s.id=e.snapshot WHERE {scope} GROUP BY code ORDER BY code", (dataset,))
+            event_counts = count_events(db, f"SELECT s.id FROM snapshots s WHERE {scope}", (dataset,))
+        code_counts = {}
+        for row in event_counts:
+            code = row["code"]
+            code_counts[code] = code_counts.get(code, 0) + row["count"]
+        event_codes = [{"code": code, "count": count} for code, count in code_counts.items()]
         times = sorted(set(timestamp(s["capture"]) for s in valid if s["capture"]))
         intervals = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
         median = statistics.median(intervals) if intervals else None
@@ -233,10 +249,23 @@ class Store:
         return {"collection": dict(collection), "identities": identities, "event_definitions": EVENT_CODES,
                 "stats": {**dict(stats), "files": len(snaps), "valid": len(valid),
                 "invalid": sum(s["status"] != "valid" for s in snaps), "duplicates": sum(s["duplicate_of"] is not None for s in snaps),
-                "events": events, "platforms": len(platforms), "median_interval": median, "gap_threshold": threshold,
+                "events": sum(code_counts.values()), "platforms": len(platforms), "median_interval": median, "gap_threshold": threshold,
                 "first": times[0].isoformat() if times else None, "last": times[-1].isoformat() if times else None},
-                "snapshots": snaps, "platforms": platforms, "trains": trains, "event_codes": event_codes,
+                "snapshots": snaps, "platforms": platforms, "trains": trains, "event_codes": event_codes, "event_counts": event_counts,
                 "gaps": gaps, "station_names": STATIONS}
+
+    def scoped_event_counts(self, dataset, *, folder=None, snapshot=None):
+        """Count one file or count distinct snapshots within the chosen folder."""
+        with self.connect() as db:
+            readable = "dataset=? AND status='valid'"
+            if snapshot is not None:
+                return count_events(db, f"SELECT id FROM snapshots WHERE {readable} AND id=?", (dataset, snapshot))
+            if folder is None:
+                raise ValueError("Choose a folder or a file")
+            db.create_function("snapshot_folder", 1, snapshot_folder, deterministic=True)
+            return count_events(db, f"""SELECT min(id) AS id FROM snapshots
+                WHERE {readable} AND snapshot_folder(name)=?
+                GROUP BY coalesce(duplicate_of,id)""", (dataset, folder))
 
     def snapshot(self, dataset, sid, offset=240):
         with self.connect() as db:

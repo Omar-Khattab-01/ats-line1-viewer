@@ -114,6 +114,10 @@ def handler_for(app):
                 return self.send(dict(app.job))
             if path == "/api/overview":
                 return self.send(app.store.overview(dataset))
+            if path == "/api/event-counts":
+                snapshot = get("snapshot")
+                return self.send(app.store.scoped_event_counts(dataset, folder=get("folder") or None,
+                                                               snapshot=int(snapshot) if snapshot else None))
             if path == "/api/snapshot":
                 offset = float(get("clock", "240"))
                 if not -1440 <= offset <= 1440:

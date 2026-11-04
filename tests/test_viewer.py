@@ -95,6 +95,34 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.query(dataset)["total"], 2)
         self.assertEqual(digest, hashlib.sha256(archive.read_bytes()).hexdigest())
 
+    def test_event_counts_distinguish_platforms_and_exclude_duplicate_snapshots(self):
+        self.write()
+        self.write("copy/tp_20261020000000.xml")
+        west = fixture().replace(b"<x:eventId>101", b"<x:eventId>103")
+        east = west.replace(b"<x:locationId>TUN-W", b"<x:locationId>TUN-E")
+        self.write("west/tp_20261020000020.xml", west)
+        self.write("west/nested/tp_20261020000040.xml", east)
+        with zipfile.ZipFile(self.source / "captures.zip", "w") as archive:
+            archive.writestr("inner/tp_20261020000100.xml", east)
+        self.write("tp_20261020000120.xml", west[:-10])
+
+        dataset = self.load()
+        overview = self.store.overview(dataset)
+        self.assertEqual(overview["stats"]["events"], 4)
+        self.assertEqual(overview["event_counts"], [
+            {"platform": "TUN-W", "code": "101", "count": 1},
+            {"platform": "TUN-E", "code": "103", "count": 2},
+            {"platform": "TUN-W", "code": "103", "count": 1},
+        ])
+        count = self.store.scoped_event_counts
+        self.assertEqual(count(dataset, folder="west"), [{"platform": "TUN-W", "code": "103", "count": 1}])
+        self.assertEqual(count(dataset, folder="captures.zip/inner"), [{"platform": "TUN-E", "code": "103", "count": 1}])
+        self.assertEqual(count(dataset, folder="copy"), [{"platform": "TUN-W", "code": "101", "count": 1}])
+        archived = next(file for file in overview["snapshots"] if file["folder"] == "captures.zip/inner")
+        self.assertEqual(count(dataset, snapshot=archived["id"]), count(dataset, folder="captures.zip/inner"))
+        invalid = next(file for file in overview["snapshots"] if file["status"] == "invalid")
+        self.assertEqual(count(dataset, snapshot=invalid["id"]), [])
+
     def test_incremental_refresh_updates_removes_and_recovers(self):
         first = self.write()
         self.write("tp_20261020000020.xml", b"")

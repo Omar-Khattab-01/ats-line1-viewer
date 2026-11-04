@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const token = document.querySelector('meta[name="ats-token"]').content;
-const state = {dataset:"", overview:null, snapshot:null, index:0, view:"overview", loading:false, playing:false, playTimer:null, followTimer:null, snapshotRequest:0, tableRequest:{}, pages:{record:0,event:0,file:0}, tableRows:{}, db:""};
+const state = {dataset:"", overview:null, snapshot:null, index:0, view:"overview", loading:false, playing:false, playTimer:null, followTimer:null, snapshotRequest:0, tableRequest:{}, pages:{record:0,event:0,file:0}, tableRows:{}, analyticsRequest:0, analyticsCounts:null, db:""};
 const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (value) => Number(value || 0).toLocaleString();
 const clockText = (value) => value ? value.replace("T", " · ") : "Unknown capture time";
@@ -15,6 +15,7 @@ const positionText = position => position.status.replace(/\s*\([^)]*\)\s*$/, "")
 const eventDictionaryText = () => Object.entries(state.overview?.event_definitions || {}).map(([code,definition])=>`${code} ${definition.label}`).join(" · ");
 const icon = (name) => {
   const paths={overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',map:'<path d="M4 4h5l6 16h5M4 20h5L15 4h5"/><circle cx="6" cy="4" r="2"/><circle cx="18" cy="20" r="2"/>',board:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h5"/>',trains:'<rect x="5" y="3" width="14" height="16" rx="3"/><path d="M5 10h14M8 22l2-3m6 3-2-3M9 15h.01M15 15h.01"/>',events:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',health:'<path d="M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM8 12l3 3 5-6"/>',records:'<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M9 4v16M15 4v16M3 14h18"/>',play:'<path d="M8 5l11 7-11 7z"/>',pause:'<path d="M8 5v14M16 5v14"/>',prev:'<path d="M15 5l-7 7 7 7"/>',next:'<path d="M9 5l7 7-7 7"/>',close:'<path d="M6 6l12 12M6 18L18 6"/>'};
+  paths.analytics='<path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5"/>';
   return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]||paths.overview}</svg>`;
 };
 const badge = (text, type="neutral") => `<span class="badge ${type}">${escapeHTML(text)}</span>`;
@@ -47,6 +48,7 @@ function setView(view) {
   if (view==="health") renderHealth();
   if (view==="records") safe(() => loadTable("record"))();
   if (view==="events") safe(() => loadTable("event"))();
+  if (view==="analytics") safe(refreshAnalytics)();
 }
 
 function stopPlayback() {
@@ -133,6 +135,9 @@ function resetFilters() {
   ["record-search","event-search","board-search","file-search","record-from","record-to"].forEach(id=>$(id).value="");
   ["record-train","record-platform","record-flag","event-train","event-platform","event-code","board-direction","file-filter"].forEach(id=>$(id).selectedIndex=0);
   $("current-only").checked=false; state.pages={record:0,event:0,file:0};
+  $("analytics-scope").value="all";
+  $("analytics-folder").value="";
+  $("analytics-file").value="";
 }
 
 function setupWorkspace() {
@@ -158,6 +163,12 @@ function setupWorkspace() {
   ["record-platform","event-platform"].forEach(id=>fillSelect(id,platforms,"All platforms"));
   fillSelect("history-train",trains); fillSelect("history-platform",platforms);
   fillSelect("event-code",o.event_codes.map(c=>({value:c.code,label:`${c.code} - ${eventLabel(c.code)} (${fmt(c.count)})` })),"All events");
+  const analyticsEvent=$("analytics-event").value || "103";
+  fillSelect("analytics-event",Object.keys(o.event_definitions).map(code=>({value:code,label:`${code} · ${eventLabel(code)}`})));
+  $("analytics-event").value=analyticsEvent;
+  const folders = [...new Set(o.snapshots.map(file => file.folder))].sort((a, b) => a.localeCompare(b));
+  fillSelect("analytics-folder",folders.map(folder=>({value:folder,label:folder==="."?"Top-level folder":folder})),"Choose a folder");
+  fillSelect("analytics-file",o.snapshots.map(file=>({value:String(file.id),label:file.name})),"Choose a file");
   $("event-definition-summary").textContent=`${eventDictionaryText()}.`;
   $("database-export").href=downloadURL("/api/database");
   $("database-location").textContent=`Workspace: ${state.db}. Use Rescan folder to update the collection. Save workspace includes all imported collections.`;
@@ -331,6 +342,110 @@ async function loadTable(prefix) {
   pagination(prefix,result.total,100,()=>loadTable(prefix));
 }
 
+async function refreshAnalytics() {
+  const request = ++state.analyticsRequest;
+  const overview = state.overview;
+  const scope = $("analytics-scope").value;
+  const source = $("analytics-source");
+  const results = $("analytics-results");
+  const folderSelect = $("analytics-folder");
+  const fileSelect = $("analytics-file");
+  $("analytics-folder-control").classList.toggle("hidden", scope !== "folder");
+  $("analytics-file-control").classList.toggle("hidden", scope !== "file");
+  results.classList.add("hidden");
+  state.analyticsCounts = null;
+
+  let files = overview.snapshots;
+  let label = `Whole collection · ${fmt(files.length)} source files`;
+  let filter = null;
+  if (scope === "folder") {
+    if (!folderSelect.value) {
+      const current = files.find(file => file.id === state.snapshot?.id);
+      folderSelect.value = (current || files[0]).folder;
+    }
+    const folder = folderSelect.value;
+    files = files.filter(file => file.folder === folder);
+    label = `${folderSelect.selectedOptions[0].textContent} · ${fmt(files.length)} files directly in this folder`;
+    filter = {folder};
+  } else if (scope === "file") {
+    if (!fileSelect.value) fileSelect.value = String(state.snapshot?.id ?? files[0].id);
+    const file = files.find(file => file.id === Number(fileSelect.value));
+    files = [file];
+    label = file.name;
+    filter = {snapshot:file.id};
+  }
+
+  source.textContent = label;
+  if (!files.some(file => file.status === "valid")) {
+    source.textContent += " · No readable snapshots in this selection.";
+    return;
+  }
+  source.textContent = filter ? `${label} · Counting events…` : label;
+  try {
+    const counts = filter ? await api("/api/event-counts", {dataset:state.dataset,...filter}) : overview.event_counts;
+    if (request !== state.analyticsRequest || overview !== state.overview) return;
+    state.analyticsCounts = counts;
+    source.textContent = label;
+    renderAnalytics();
+    results.classList.remove("hidden");
+  } catch (error) {
+    if (request === state.analyticsRequest && overview === state.overview) source.textContent = `${label} · ${error.message}`;
+  }
+}
+
+function renderAnalytics() {
+  if (!state.analyticsCounts) return;
+  const {event_definitions, station_names} = state.overview;
+  const codes = Object.keys(event_definitions);
+  const selected = $("analytics-event").value;
+  const track = $("analytics-track").value;
+  const sort = $("analytics-order").value;
+  const stations = Object.entries(station_names).map(([code, name]) => ({code, name, counts: {}}));
+  const byPlatform = new Map(stations.flatMap(station => [
+    [`${station.code}-W`, station], [`${station.code}-E`, station]
+  ]));
+
+  let unmapped = 0;
+  for (const {platform, code, count} of state.analyticsCounts) {
+    if (!codes.includes(code)) continue;
+    const station = byPlatform.get(platform);
+    if (!station) {
+      if (code === selected) unmapped += count;
+      continue;
+    }
+    if (track && !platform.endsWith(`-${track}`)) continue;
+    station.counts[code] = (station.counts[code] || 0) + count;
+  }
+
+  const selectedCount = station => station.counts[selected] || 0;
+  const ranked = [...stations].sort((a, b) => selectedCount(a) - selectedCount(b));
+  const minimum = selectedCount(ranked[0]);
+  const lowest = ranked.filter(station => selectedCount(station) === minimum);
+  const smallestNonzero = ranked.find(station => selectedCount(station) > 0);
+  const nonzeroMinimum = smallestNonzero ? selectedCount(smallestNonzero) : null;
+  const lowestNonzero = nonzeroMinimum === null ? [] : ranked.filter(station => selectedCount(station) === nonzeroMinimum);
+  const stationNote = group => group.length === 1 ? group[0].name : `${fmt(group.length)} stations tied`;
+  const eventTotal = ranked.reduce((sum, station) => sum + selectedCount(station), 0);
+  $("analytics-summary").innerHTML = [
+    [`${eventLabel(selected)} (${selected}) records`, eventTotal, "At mapped stations"],
+    ["Fewest at a station", minimum, stationNote(lowest)],
+    ["Fewest where recorded", nonzeroMinimum, lowestNonzero.length ? stationNote(lowestNonzero) : "No records for this code"]
+  ].map(([label, value, note]) => `<article class="panel health-card"><span>${escapeHTML(label)}</span><strong>${value === null ? "—" : fmt(value)}</strong><small>${escapeHTML(note)}</small></article>`).join("");
+  $("analytics-unmapped").textContent = `${fmt(unmapped)} records for code ${selected} in this selection have no mapped Line 1 platform.`;
+  $("analytics-unmapped").classList.toggle("hidden", unmapped === 0);
+
+  const order = sort === "ascending" ? 1 : -1;
+  const display = [...stations].sort((a, b) => order * (selectedCount(a) - selectedCount(b)));
+  const header = codes.map(code => `<th scope="col" ${code === selected ? `class="ranked-event" aria-sort="${sort}"` : ""}>${escapeHTML(`${code} ${eventLabel(code)}`)}</th>`).join("");
+  const body = display.map(({code, name, counts}) => `<tr>
+    <th scope="row">${escapeHTML(name)} <span class="muted">${escapeHTML(code)}</span></th>
+    ${codes.map(event => `<td class="${event === selected ? "ranked-event" : ""}">${fmt(counts[event] || 0)}</td>`).join("")}
+  </tr>`).join("");
+  $("analytics-table").innerHTML = `<table class="analytics-table" aria-label="ATS event counts by station">
+    <thead><tr><th scope="col">Station</th>${header}</tr></thead><tbody>${body}</tbody>
+  </table>`;
+}
+
 function renderHealth() {
   const o=state.overview,s=o.stats;
   $("health-summary").innerHTML=[[s.invalid,"Empty / invalid files"],[s.duplicates,"Duplicate copies excluded"],[o.gaps.length,`Gaps over ${s.gap_threshold}s`]].map(([n,label])=>`<article class="panel health-card"><strong>${fmt(n)}</strong><span>${escapeHTML(label)}</span></article>`).join("");
@@ -428,6 +543,8 @@ for(const prefix of ["record","event"]) {
 $("current-only").onchange=safe(()=>{state.pages.record=0;return loadTable("record");});
 $("clear-filters").onclick=safe(()=>{["record-search","record-from","record-to","record-train","record-platform","record-flag"].forEach(id=>$(id).value="");$("current-only").checked=false;state.pages.record=0;return loadTable("record");});
 $("file-search").oninput=debounce(()=>{state.pages.file=0;renderHealth();});$("file-filter").onchange=()=>{state.pages.file=0;renderHealth();};
+for (const id of ["analytics-event", "analytics-track", "analytics-order"]) $(id).onchange = renderAnalytics;
+for (const id of ["analytics-scope", "analytics-folder", "analytics-file"]) $(id).onchange = safe(refreshAnalytics);
 $("close-detail").onclick=()=>$("detail").close();
 $("detail").onclick=e=>{if(e.target===$("detail")){const r=$("detail").getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)$("detail").close();}};
 $("help").onclick=()=>modal("Viewer guide",`
@@ -441,6 +558,7 @@ $("help").onclick=()=>modal("Viewer guide",`
   <p>Train numbers such as 06-40 identify coupled vehicles. Select a train and platform to compare arrival predictions across captures. Use the station board to view upcoming calls, held platforms, and closures. Negative countdowns indicate times before the selected snapshot.</p>
   <h3>Events</h3>
   <p>${escapeHTML(eventDictionaryText() || "100 Arrived · 101 Arriving · 102 Departing · 103 Departed")}. Search by train or vehicle number, platform, or event code. Select a row for its XML fields.</p>
+  <p>Use Analytics to compare event counts by station for the whole collection, one folder, or one file. Choose an event code to rank the stations and a track to narrow the counts.</p>
   <h3>Event review priorities</h3>
   <p>At termini, prioritize 103, 102, 100, then 101. At other stations, prioritize 100, 101, 103, then 102. Event 103 identifies trip departure at a terminus. Event 102 is train-triggered and counts can vary. Review event coverage over the relevant revenue-service period.</p>
   <h3>File health</h3>
