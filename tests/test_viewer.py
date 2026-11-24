@@ -71,6 +71,44 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(unknown["predictions"][0]["eta_seconds"])
         self.assertTrue(unknown["warnings"])
 
+    def test_automatic_clock_alignment_across_dates_and_event_free_snapshots(self):
+        self.write()
+        winter = fixture().replace(b"2026-10-20T04:", b"2026-11-04T05:")
+        self.write("tp_20261104000000.xml", winter)
+        without_events = winter.split(b"<eventAll>")[0] + b"</PredictionEventAll>"
+        self.write("tp_20261104000020.xml", without_events)
+        self.write("tp_20261204000000.xml", without_events.replace(b"2026-11-04", b"2026-12-04"))
+        dataset = self.load()
+        snapshots = self.store.overview(dataset)["snapshots"]
+        for source, expected in zip(snapshots[:3], (240, 300, 300)):
+            with self.subTest(source=source["name"]):
+                snap = self.store.snapshot(dataset, source["id"])
+                self.assertEqual(snap["clock_offset"], expected)
+                self.assertEqual(len(snap["positions"]["trains"]), 1)
+        self.assertEqual(self.store.snapshot(dataset, snapshots[1]["id"], 240)["positions"]["trains"], [])
+        unknown = self.store.snapshot(dataset, snapshots[-1]["id"])
+        self.assertIsNone(unknown["clock_offset"])
+        self.assertIsNone(unknown["feed_reference"])
+
+    def test_automatic_clock_alignment_when_both_clocks_match(self):
+        self.write(data=fixture().replace(b"2026-10-20T04:", b"2026-10-20T00:"))
+        dataset = self.load()
+        source = self.store.overview(dataset)["snapshots"][0]
+        snap = self.store.snapshot(dataset, source["id"])
+        self.assertEqual(snap["clock_offset"], 0)
+        self.assertEqual(len(snap["positions"]["trains"]), 1)
+
+    def test_automatic_clock_alignment_during_repeated_hour(self):
+        first = fixture().replace(b"2026-10-20T04:00", b"2026-11-01T05:30")
+        first = first.replace(b"2026-10-20T04:01", b"2026-11-01T05:31")
+        first = first.replace(b"2026-10-20T04:02", b"2026-11-01T05:32")
+        second = first.replace(b"2026-11-01T05:", b"2026-11-01T06:")
+        self.write("first/tp_20261101013000.xml", first)
+        self.write("second/tp_20261101013000.xml", second)
+        dataset = self.load()
+        snapshots = self.store.overview(dataset)["snapshots"]
+        self.assertEqual([self.store.snapshot(dataset, f["id"])["clock_offset"] for f in snapshots], [240, 300])
+
     def test_empty_invalid_and_missing_fields_are_visible(self):
         self.write(data=b"")
         self.write("tp_20261020000020.xml", b"<broken>")
@@ -259,6 +297,9 @@ class HTTPTests(unittest.TestCase):
         sid = overview["snapshots"][0]["id"]
         detail = json.load(self.request(f"/api/snapshot?dataset={self.dataset}&id={sid}&clock=240"))
         self.assertEqual(len(detail["predictions"]), 1101)
+        automatic = json.load(self.request(f"/api/snapshot?dataset={self.dataset}&id={sid}&clock=auto"))
+        self.assertEqual(automatic["clock_offset"], 240)
+        self.assertEqual(automatic["positions"], detail["positions"])
         self.assertEqual(self.request(f"/api/raw?dataset={self.dataset}&id={sid}").read(), fixture(count=1101))
 
     def test_windows_default_encoding_does_not_corrupt_page(self):

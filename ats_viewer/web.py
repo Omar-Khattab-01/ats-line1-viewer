@@ -119,8 +119,9 @@ def handler_for(app):
                 return self.send(app.store.scoped_event_counts(dataset, folder=get("folder") or None,
                                                                snapshot=int(snapshot) if snapshot else None))
             if path == "/api/snapshot":
-                offset = float(get("clock", "240"))
-                if not -1440 <= offset <= 1440:
+                clock = get("clock", "auto")
+                offset = None if clock == "auto" else float(clock)
+                if offset is not None and not -1440 <= offset <= 1440:
                     raise ValueError("Clock difference must be between -1440 and 1440 minutes")
                 return self.send(app.store.snapshot(dataset, int(get("id")), offset))
             if path == "/api/rows":

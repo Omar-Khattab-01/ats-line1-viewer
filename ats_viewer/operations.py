@@ -43,6 +43,22 @@ def seconds(a, b):
         return None
 
 
+def infer_clock_offset(samples):
+    """Match local or UTC ATS events to the clock of their receiving filename.
+
+    Samples are ordered by proximity to the selected snapshot. An event may
+    precede its capture by up to ten minutes or lead it by up to ten seconds.
+    """
+    for sample in samples:
+        difference = seconds(timestamp(sample["time"]), timestamp(sample["capture"]))
+        if difference is None:
+            continue
+        for offset in (0, 240, 300):
+            if -600 <= difference - offset * 60 <= 10:
+                return offset
+    return None
+
+
 def platform_location(platform):
     if not isinstance(platform, str) or "-" not in platform:
         return None

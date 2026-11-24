@@ -26,6 +26,7 @@ const safe = (fn) => (...args) => Promise.resolve().then(() => fn(...args)).catc
 const debounce = (fn, delay=250) => { let timer; return (...args) => { clearTimeout(timer); timer=setTimeout(safe(() => fn(...args)),delay); }; };
 const selectedFiles = () => state.overview?.snapshots.filter(s => !s.duplicate_of) || [];
 const downloadURL = (path, values={}) => `${path}?${new URLSearchParams({dataset:state.dataset,token,...values})}`;
+const clockSetting = () => $("clock-mode").value === "auto" ? "auto" : $("clock").value || 0;
 
 async function api(path, values={}, body=null) {
   const options = {headers:{"X-ATS-Token":token}};
@@ -59,14 +60,15 @@ async function chooseSnapshot(index) {
   const files=selectedFiles();
   if (!files.length) return;
   const request=++state.snapshotRequest;
+  const clock=clockSetting();
   state.index=Math.max(0,Math.min(files.length-1,index));
   $("timeline").value=state.index;
-  const snapshot=await api("/api/snapshot",{dataset:state.dataset,id:files[state.index].id,clock:$("clock").value || 0});
+  const snapshot=await api("/api/snapshot",{dataset:state.dataset,id:files[state.index].id,clock});
   if (request!==state.snapshotRequest) return;
   state.snapshot=snapshot;
   $("snapshot-counter").textContent=`${fmt(state.index+1)} / ${fmt(files.length)}`;
   $("capture").textContent=clockText(snapshot.capture);
-  $("feed-clock").textContent=`Filename clock · XML reference ${shortTime(snapshot.feed_reference)} · offset ${Number($("clock").value)>=0?"+":""}${$("clock").value} min (configured)`;
+  $("feed-clock").textContent=snapshot.clock_offset === null ? "Clock alignment unavailable · select Manual under Data source → Clock alignment" : `Filename clock · XML reference ${shortTime(snapshot.feed_reference)} · offset ${snapshot.clock_offset>=0?"+":""}${snapshot.clock_offset} min (${clock==="auto"?"automatic":"manual"})`;
   $("snapshot-status").textContent=snapshot.status==="valid" ? `${snapshot.predictions.length} predictions · ${snapshot.events.length} reported events` : `${snapshot.status.toUpperCase()} · ${snapshot.error}`;
   $("prev").disabled=state.index===0; $("next").disabled=state.index===files.length-1;
   $("view-xml").disabled=snapshot.size===0;
@@ -200,7 +202,7 @@ function renderOverview() {
   $("overview-trains").querySelectorAll("[data-train]").forEach(b=>b.onclick=()=>{$("history-train").value=b.dataset.train;setView("trains");});
   const flagged=snap.platforms.filter(p=>p.closed==="true"||p.held==="true");
   const notes=[
-    ["Clock offset",`${$("clock").value} minutes between XML and filename times. Change this under Data source.`],
+    ["Clock alignment",snap.clock_offset === null ? "No nearby event timestamp could align this snapshot. Choose Manual under Data source → Clock alignment." : `${snap.clock_offset} minutes between XML and filename times (${clockSetting()==="auto"?"automatic":"manual"}).`],
     [o.stats.invalid ? `${o.stats.invalid} empty or invalid snapshots` : "All snapshots readable",o.stats.invalid ? "Open File health to review the affected files." : `${fmt(o.stats.valid)} readable snapshots in this collection.`],
     [flagged.length ? `${flagged.length} held or closed platforms` : "Platform status",flagged.length ? flagged.map(p=>`${p.platform}: ${p.closed==="true"?"closed ":""}${p.held==="true"?"held":""}`).join(" · ") : "No held or closed platforms in this snapshot."],
     [`${fmt(o.stats.events)} events`,eventDictionaryText()]
@@ -231,7 +233,7 @@ function renderTrackMap(target,details) {
     });
   }
   $(target).innerHTML=`<div class="track-scroll"><svg class="track-diagram" viewBox="0 0 ${width} ${height}" role="group" aria-label="Line 1 estimated train positions: Track 1 is West and Track 2 is East">${drawing}</svg></div><p class="footnote map-disclaimer">Filled marker: estimated position. Outlined marker: approaching within the highlighted segment.</p>`+(details?`<div class="map-evidence">${data.trains.map(t=>`<button class="position-card" data-map-train="${escapeHTML(t.train_id)}"><strong>${escapeHTML(trainLabel(t.train_id,t))}<span>Track ${t.track}</span></strong><p>${escapeHTML(positionText(t))}</p><small>View prediction</small></button>`).join("")}${data.unplaced.map(t=>`<div class="position-card unplaced"><strong>${escapeHTML(trainLabel(t.train_id,t))}<span>Not placed</span></strong><p>${escapeHTML(t.reason)}</p></div>`).join("")}</div>`:"");
-  if(!data.trains.length)$(target).insertAdjacentHTML("beforeend",empty(snap.status!=="valid"?"No map data for this snapshot. Choose another snapshot.":"No train positions are available for this snapshot."));
+  if(!data.trains.length)$(target).insertAdjacentHTML("beforeend",empty(snap.status!=="valid"?"No map data for this snapshot. Choose another snapshot.":snap.predictions.length && snap.clock_offset===null?"Clock alignment unavailable. Choose Manual under Data source → Clock alignment.":"No train positions are available for this snapshot."));
   const activate=(element,action)=>{element.onclick=action;element.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();action();}};};
   $(target).querySelectorAll("[data-map-station]").forEach(b=>activate(b,()=>{$("board-search").value=b.dataset.mapStation;setView("board");}));
   $(target).querySelectorAll("[data-map-train]").forEach(b=>activate(b,()=>{
@@ -514,6 +516,12 @@ $("clock").onchange=safe(async()=>{
   if(!$("clock").checkValidity())throw new Error("Clock difference must be a whole number between -1440 and 1440 minutes.");
   localStorage.setItem("ats-clock",$("clock").value);if(state.dataset)await chooseSnapshot(state.index);
 });
+$("clock-mode").onchange=safe(async()=>{
+  $("clock").disabled=$("clock-mode").value==="auto";
+  localStorage.setItem("ats-clock-mode",$("clock-mode").value);
+  clearError();
+  if(state.dataset)await chooseSnapshot(state.index);
+});
 $("recent").onchange=safe(async()=>{
   const collection=state.recent.find(d=>d.id===$("recent").value);if(!collection)return;
   stopPlayback(); state.dataset=collection.id; state.overview=await api("/api/overview",{dataset:state.dataset});
@@ -553,7 +561,7 @@ $("help").onclick=()=>modal("Viewer guide",`
   <h3>Playback and track map</h3>
   <p>Drag the timeline or press Play to move through the snapshots. The map covers Tunney’s Pasture to Trim. Track 1 is West; Track 2 is East. Filled markers show estimated positions; outlined markers show trains approaching within a highlighted segment. Select a train for its prediction details, or a station for its platform board.</p>
   <h3>Clock alignment</h3>
-  <p>Capture times come from filenames such as <code>tp_YYYYMMDDHHMMSS.xml</code>. Set the XML clock minus the filename clock under Data source. The default is +240 minutes; use 0 if both clocks match. Countdown = predicted arrival − adjusted capture time. For periods spanning a clock change, load each period with its corresponding offset.</p>
+  <p>Capture times come from filenames such as <code>tp_YYYYMMDDHHMMSS.xml</code>. Automatic alignment compares event timestamps with their receiving filenames to recognize matching clocks or a four- or five-hour difference. It updates for each snapshot, including collections spanning a clock change. For other clock differences, choose Manual under Data source → Clock alignment. Countdown = predicted arrival − adjusted capture time.</p>
   <h3>Train and station views</h3>
   <p>Train numbers such as 06-40 identify coupled vehicles. Select a train and platform to compare arrival predictions across captures. Use the station board to view upcoming calls, held platforms, and closures. Negative countdowns indicate times before the selected snapshot.</p>
   <h3>Events</h3>
@@ -571,6 +579,8 @@ safe(async()=>{
   const session=await api("/api/session");state.db=session.database;fillRecent(session.datasets);
   $("source-path").value=session.initial_path||localStorage.getItem("ats-path")||"";
   const savedClock=localStorage.getItem("ats-clock");if(savedClock!==null&&Number.isFinite(Number(savedClock)))$("clock").value=savedClock;
+  $("clock-mode").value=localStorage.getItem("ats-clock-mode")==="manual"?"manual":"auto";
+  $("clock").disabled=$("clock-mode").value==="auto";
   if(session.initial_path)await loadCollection();
   else if(session.datasets.length) {
     const latest=session.datasets[0];state.dataset=latest.id;state.overview=await api("/api/overview",{dataset:state.dataset});

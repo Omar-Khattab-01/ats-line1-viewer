@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .parser import STATIONS, capture_time, parse, timestamp
-from .operations import EVENT_CODES, consist_label, estimate_positions, seconds
+from .operations import EVENT_CODES, consist_label, estimate_positions, infer_clock_offset, seconds
 
 MAX_XML_BYTES = 32 * 1024 * 1024
 SCHEMA = """
@@ -267,7 +267,7 @@ class Store:
                 WHERE {readable} AND snapshot_folder(name)=?
                 GROUP BY coalesce(duplicate_of,id)""", (dataset, folder))
 
-    def snapshot(self, dataset, sid, offset=240):
+    def snapshot(self, dataset, sid, offset=None):
         with self.connect() as db:
             source = db.execute("SELECT id,name,capture,status,error,warnings,sha,size,duplicate_of FROM snapshots WHERE dataset=? AND id=?", (dataset, sid)).fetchone()
             if not source:
@@ -277,9 +277,21 @@ class Store:
             result["platforms"] = rows(db, "SELECT * FROM platforms WHERE snapshot=? ORDER BY rowid", (sid,))
             result["predictions"] = rows(db, "SELECT * FROM predictions WHERE snapshot=? ORDER BY platform,arr,train_id", (sid,))
             result["events"] = rows(db, "SELECT * FROM events WHERE snapshot=? ORDER BY time,row_id", (sid,))
+            if offset is None and result["capture"]:
+                capture = timestamp(result["capture"])
+                samples = rows(db, """SELECT s.capture, max(e.time) AS time
+                    FROM snapshots s JOIN events e ON e.snapshot=s.id
+                    WHERE s.dataset=? AND s.status='valid' AND s.duplicate_of IS NULL
+                      AND s.capture BETWEEN ? AND ?
+                    GROUP BY s.id
+                    ORDER BY (s.id=?) DESC, abs(julianday(s.capture)-julianday(?)), s.capture DESC LIMIT 10""",
+                    (dataset, (capture-timedelta(minutes=15)).isoformat(),
+                     (capture+timedelta(minutes=15)).isoformat(), sid, result["capture"]))
+                offset = infer_clock_offset(samples)
             received = rows(db, "SELECT e.*,s.capture AS received_capture,s.name AS source FROM events e JOIN snapshots s ON s.id=e.snapshot WHERE s.dataset=? AND s.duplicate_of IS NULL AND s.capture<=? ORDER BY s.capture,e.row_id", (dataset, result["capture"])) if result["capture"] else []
         capture = timestamp(result["capture"])
-        reference = capture + timedelta(minutes=offset) if capture else None
+        reference = capture + timedelta(minutes=offset) if capture and offset is not None else None
+        result["clock_offset"] = offset
         result["feed_reference"] = reference.isoformat() if reference else None
         identities = self.identities(dataset)
         for p in result["predictions"]:
